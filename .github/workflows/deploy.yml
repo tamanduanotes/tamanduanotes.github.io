@@ -1,0 +1,79 @@
+# Deploy stable (PLAN 9, "The workflow in the stable repository").
+#
+# This is the master copy. Felipe pastes it into the stable repository
+# (tamanduanotes/tamanduanotes.github.io) as .github/workflows/deploy.yml, and again whenever it
+# changes here; the milestone report says when.
+#
+# It runs only by hand, with one input: a release tag of the source repository. It refuses anything
+# that is not vX.Y.Z, downloads tamandua-stable.zip and its checksum from that public release (no
+# token needed), verifies the checksum, refuses a build that is not the stable channel, and deploys
+# the unpacked files to GitHub Pages at STABLE_URL (https://tamanduanotes.github.io). It builds
+# nothing, so the bytes CI tested are the bytes that are served.
+#
+# To put an older release back, run it again with the older tag.
+name: Deploy stable
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to deploy, for example v0.0.1'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPO: saddamdocs/saddamdocs.github.io
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check the tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$TAG' is not a release tag of the form vX.Y.Z"
+            exit 1
+          fi
+      - name: Download and verify the release
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          base="https://github.com/$SOURCE_REPO/releases/download/$TAG"
+          curl -fsSL --retry 3 -o tamandua-stable.zip "$base/tamandua-stable.zip"
+          curl -fsSL --retry 3 -o tamandua-stable.zip.sha256 "$base/tamandua-stable.zip.sha256"
+          sha256sum -c tamandua-stable.zip.sha256
+          mkdir site
+          unzip -q tamandua-stable.zip -d site
+          test -f site/index.html
+          test -f site/sw.js
+          if grep -q '(next)' site/manifest.webmanifest; then
+            echo "::error::This archive is a next-channel build; refusing to deploy it to stable"
+            exit 1
+          fi
+          echo "Deploying $TAG ($(cut -d' ' -f1 tamandua-stable.zip.sha256))" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: fetch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
